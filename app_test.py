@@ -424,8 +424,13 @@ outdoor_types = [
     "명산", "관광농원", "목장"
 ]
 
+print(f"[날씨 경고 확인] 목적지: {result['목적지명_정리']}, 카테고리: {result['카테고리 3단계']}")
+
 if weather is not None:
-    if weather["precipitation"] > 0 and destination_type in outdoor_types:
+    if weather["precipitation"] > 0 and (
+    destination_type in outdoor_types
+    or "트래킹" in str(result["목적지명_정리"])
+):
         st.warning(
             "🌧️ 추천 관광지 주변에 강수가 표시됩니다. "
             "야외 관광지이므로 방문 전 "
@@ -803,11 +808,6 @@ with st.expander("분석 기준 및 이용 시 유의사항"):
         "• 추천 점수는 모델 내부의 상대적 평가 지표이며, "
         "관광지의 절대적인 품질 점수가 아닙니다."
     )
-
-st.caption(
-    "2026 제주 관광 데이터 활용사례 공모전 | "
-    "데이터 기반 관광수요 분산 추천 서비스"
-)
 
 st.caption(
     "2026 제주 관광 데이터 활용사례 공모전 | "
