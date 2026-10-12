@@ -270,14 +270,13 @@ selected = st.selectbox(
 weight_choice = st.radio(
     "추천 기준을 선택하세요",
     [
-        "⚖️ 균형 추천 (거리 50% · 수요 50%)",
-        "🚗 거리 우선 (거리 60% · 수요 40%)",
-        "🌿 수요 분산 우선 (거리 40% · 수요 60%)"
+        "⚖️ 균형 추천 (이동시간 50% · 수요 50%)",
+        "🚗 이동시간 우선 (이동시간 60% · 수요 40%)",
+        "🌿 수요 분산 우선 (이동시간 40% · 수요 60%)"
     ],
     horizontal=True
 )
-
-if "거리 우선" in weight_choice:
+if "이동시간 우선" in weight_choice:
     distance_weight = 0.6
 elif "수요 분산 우선" in weight_choice:
     distance_weight = 0.4
@@ -288,6 +287,12 @@ else:
 candidates = df[
     df["출발관광지"] == selected
 ].copy()
+
+# 같은 출발지에서 동일한 목적지가 중복 추천되지 않도록 처리
+candidates = candidates.drop_duplicates(
+    subset=["목적지명_정리"],
+    keep="first"
+).copy()
 
 # 실시간 교통 조회에 사용할 관광지 좌표 준비
 traffic_locations = load_tourist_locations().set_index("hubTatsNm")
@@ -312,7 +317,7 @@ if selected in traffic_locations.index:
             )
 
             candidates.at[idx, "실시간이동시간_분"] = live_minutes
-            print(f"[교통 확인] {selected} → {destination_name}: {live_minutes}분")
+         
 # 현재 교통 반영 이동시간으로 접근성 점수 계산
 times = pd.to_numeric(
     candidates["실시간이동시간_분"],
@@ -335,7 +340,10 @@ candidates["선택가중치점수"] = (
     candidates["실시간접근성점수"] * distance_weight
     + candidates["수요여유점수_자동차"] * (1 - distance_weight)
 )
-
+if times.notna().all() and len(times) >= 2 and times.max() > times.min():
+    st.caption("📊 추천 순위: 실시간 교통 반영 이동시간과 관광 수요 여유 점수를 결합했습니다.")
+else:
+    st.caption("📊 추천 순위: 실시간 교통 비교가 어려워 기존 분석 거리 점수와 관광 수요 여유 점수를 결합했습니다.")
 # 추천 점수가 높은 순서대로 정렬
 candidates = candidates.sort_values(
     "선택가중치점수",
@@ -424,8 +432,6 @@ outdoor_types = [
     "명산", "관광농원", "목장"
 ]
 
-print(f"[날씨 경고 확인] 목적지: {result['목적지명_정리']}, 카테고리: {result['카테고리 3단계']}")
-
 if weather is not None:
     if weather["precipitation"] > 0 and (
     destination_type in outdoor_types
@@ -439,12 +445,21 @@ if weather is not None:
 
 # 강풍 시 야외 관광지 방문 주의 안내
 if weather is not None:
-    if weather["wind_speed_10m"] >= 36 and destination_type in outdoor_types:
+    if weather["wind_speed_10m"] >= 36 and (
+    destination_type in outdoor_types
+    or "트래킹" in str(result["목적지명_정리"])
+):
         st.warning(
             "💨 추천 관광지 주변 풍속이 36km/h 이상입니다. "
             "야외 활동 시 강풍에 주의하고, "
             "방문 전 현지 기상특보와 출입 상황을 확인해 주세요."
         )
+st.caption(
+    "🕒 데이터 갱신 안내: 실시간 교통 정보는 최대 5분, "
+    "날씨 정보는 최대 10분간 이전 조회 결과를 재사용할 수 있습니다. "
+    "실제 현장 상황과 차이가 있을 수 있습니다."
+)
+
 st.markdown("### 🏅 가중치별 추천 TOP3")
 
 for rank, (_, candidate) in enumerate(
@@ -483,7 +498,12 @@ else:
 origin_count = int(result["출발관광지_도착수"])
 destination_count = int(result["관광객 도착 수"])
 
-
+st.caption(
+    "ℹ️ 표시된 이동시간은 관광지별 조회 결과이며, "
+    "추천 순위 계산 기준과 다를 수 있습니다. "
+    "실시간 교통 조회가 일부 실패하면 추천 순위에는 "
+    "기존 분석 거리 점수를 사용합니다."
+)
 # ==========================================
 # 5. 추천 결과
 # ==========================================
@@ -721,7 +741,13 @@ if selected_routes:
 
     st.caption(
         "🔴 출발 관광지 | 🟢 추천 관광지 | "
-        "🔵 실제 자동차 도로 경로"
+        "🔵 분석 시점의 실제 자동차 도로 경로"
+    )
+
+    st.caption(
+        "ℹ️ 파란색 경로는 분석 시점에 수집한 도로 경로입니다. "
+        "현재 교통을 반영한 예상 이동시간과 실제 주행 경로는 "
+        "다를 수 있습니다."
     )
 
 else:
