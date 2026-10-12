@@ -243,6 +243,16 @@ candidates = candidates.sort_values(
     ascending=False
 )
 
+# 같은 장소인 코난해변과 코난비치를 하나로 처리
+candidates["중복제거용이름"] = candidates["목적지명_정리"].replace({
+    "코난비치": "코난해변"
+})
+
+candidates = candidates.drop_duplicates(
+    subset=["중복제거용이름"],
+    keep="first"
+)
+
 # 가장 높은 점수의 관광지를 대표 추천지로 선택
 result = candidates.iloc[0]
 destination_type = str(result["카테고리 3단계"])
@@ -679,6 +689,11 @@ with st.expander("분석 기준 및 이용 시 유의사항"):
         "• 추천 점수는 모델 내부의 상대적 평가 지표이며, "
         "관광지의 절대적인 품질 점수가 아닙니다."
     )
+
+st.caption(
+    "2026 제주 관광 데이터 활용사례 공모전 | "
+    "데이터 기반 관광수요 분산 추천 서비스"
+)
 
 st.caption(
     "2026 제주 관광 데이터 활용사례 공모전 | "
