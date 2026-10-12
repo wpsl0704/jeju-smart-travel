@@ -13,12 +13,12 @@ import requests
 
 BASE_DIR = Path(__file__).resolve().parent
 @st.cache_data(ttl=600)
-def load_jeju_weather():
+def load_jeju_weather(latitude, longitude):
     url = "https://api.open-meteo.com/v1/forecast"
 
     params = {
-        "latitude": 33.4996,
-        "longitude": 126.5312,
+        "latitude": latitude,
+        "longitude": longitude,
         "current": "temperature_2m,precipitation,weather_code,wind_speed_10m",
         "timezone": "Asia/Seoul"
     }
@@ -178,17 +178,7 @@ st.markdown("""
     </div>
 </div>
 """, unsafe_allow_html=True)
-weather = load_jeju_weather()
 
-if weather is not None:
-    st.info(
-        f"🌤️ 제주시 현재 날씨 | "
-        f"기온 {weather['temperature_2m']}°C | "
-        f"강수량 {weather['precipitation']}mm | "
-        f"풍속 {weather['wind_speed_10m']}km/h"
-    )
-else:
-    st.caption("현재 날씨 정보를 불러올 수 없습니다.")
 
 # ==========================================
 # 4. 출발 관광지 선택
@@ -256,16 +246,6 @@ candidates = candidates.sort_values(
 # 가장 높은 점수의 관광지를 대표 추천지로 선택
 result = candidates.iloc[0]
 destination_type = str(result["카테고리 3단계"])
-# 비가 올 때 야외 관광지 방문 주의 안내
-outdoor_types = ["해수욕장", "폭포/계곡", "골프장", "오름"]
-
-if weather is not None:
-    if weather["precipitation"] > 0 and destination_type in outdoor_types:
-        st.warning(
-            "🌧️ 현재 제주시에서 비가 관측되고 있습니다. "
-            "추천 관광지는 야외 관광지이므로 방문 전 "
-            "현지 날씨와 운영·출입 상황을 확인해 주세요."
-        )
 
 # 선택된 추천 관광지의 위치 찾기
 locations = load_tourist_locations()
@@ -293,6 +273,52 @@ else:
     destination_lat = None
     destination_lon = None
 
+# 현재 관광지(출발지) 주변 날씨 조회
+if origin_lat is not None and origin_lon is not None:
+    origin_weather = load_jeju_weather(origin_lat, origin_lon)
+else:
+    origin_weather = None
+
+# 현재 관광지(출발지) 주변 날씨 표시
+if origin_weather is not None:
+    st.info(
+        f"📍 {selected} 주변 현재 날씨 | "
+        f"기온 {origin_weather['temperature_2m']}°C | "
+        f"강수량 {origin_weather['precipitation']}mm | "
+        f"풍속 {origin_weather['wind_speed_10m']}km/h"
+    )
+else:
+    st.caption("현재 관광지 주변 날씨 정보를 불러올 수 없습니다.")
+# 추천 관광지 주변 날씨 조회
+if destination_lat is not None and destination_lon is not None:
+    weather = load_jeju_weather(destination_lat, destination_lon)
+else:
+    weather = None
+
+# 추천 관광지 주변 날씨 표시
+if weather is not None:
+    st.info(
+        f"🌤️ {result['목적지명_정리']} 주변 현재 날씨 | "
+        f"기온 {weather['temperature_2m']}°C | "
+        f"강수량 {weather['precipitation']}mm | "
+        f"풍속 {weather['wind_speed_10m']}km/h"
+    )
+else:
+    st.caption("추천 관광지 주변 날씨 정보를 불러올 수 없습니다.")
+
+# 비가 올 때 야외 관광지 방문 주의 안내
+outdoor_types = [
+    "해수욕장", "폭포/계곡", "골프장", "오름",
+    "명산", "관광농원", "목장"
+]
+
+if weather is not None:
+    if weather["precipitation"] > 0 and destination_type in outdoor_types:
+        st.warning(
+            "🌧️ 추천 관광지 주변에 강수가 표시됩니다. "
+            "야외 관광지이므로 방문 전 "
+            "현지 날씨와 운영·출입 상황을 확인해 주세요."
+        )
 st.markdown("### 🏅 가중치별 추천 TOP3")
 
 for rank, (_, candidate) in enumerate(
