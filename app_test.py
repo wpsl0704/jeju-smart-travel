@@ -305,7 +305,10 @@ if weather is not None:
     )
 else:
     st.caption("추천 관광지 주변 날씨 정보를 불러올 수 없습니다.")
-
+st.caption(
+    "🌦️ 날씨 데이터: Open-Meteo API | "
+    "관광지 좌표 기준 날씨 정보 (현장 실측값 아님)"
+)
 # 비가 올 때 야외 관광지 방문 주의 안내
 outdoor_types = [
     "해수욕장", "폭포/계곡", "골프장", "오름",
@@ -318,6 +321,15 @@ if weather is not None:
             "🌧️ 추천 관광지 주변에 강수가 표시됩니다. "
             "야외 관광지이므로 방문 전 "
             "현지 날씨와 운영·출입 상황을 확인해 주세요."
+        )
+
+# 강풍 시 야외 관광지 방문 주의 안내
+if weather is not None:
+    if weather["wind_speed_10m"] >= 36 and destination_type in outdoor_types:
+        st.warning(
+            "💨 추천 관광지 주변 풍속이 36km/h 이상입니다. "
+            "야외 활동 시 강풍에 주의하고, "
+            "방문 전 현지 기상특보와 출입 상황을 확인해 주세요."
         )
 st.markdown("### 🏅 가중치별 추천 TOP3")
 
