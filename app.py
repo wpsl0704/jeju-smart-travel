@@ -5,13 +5,51 @@ import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
-
+import requests
 
 # ==========================================
 # 1. 기본 설정
 # ==========================================
 
 BASE_DIR = Path(__file__).resolve().parent
+@st.cache_data(ttl=600)
+def load_jeju_weather(latitude, longitude):
+    url = "https://api.open-meteo.com/v1/forecast"
+
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "current": "temperature_2m,precipitation,weather_code,wind_speed_10m",
+        "timezone": "Asia/Seoul"
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()["current"]
+    except (requests.RequestException, KeyError, ValueError):
+        return None
+
+# 관광지 위치 좌표 데이터 불러오기
+@st.cache_data
+def load_tourist_locations():
+    locations = pd.read_csv(
+        BASE_DIR / "제주_중심관광지.csv",
+        encoding="utf-8-sig"
+    )
+
+    locations["mapX"] = pd.to_numeric(
+        locations["mapX"], errors="coerce"
+    )
+    locations["mapY"] = pd.to_numeric(
+        locations["mapY"], errors="coerce"
+    )
+
+    return (
+        locations
+        .dropna(subset=["hubTatsNm", "mapX", "mapY"])
+        .drop_duplicates(subset=["hubTatsNm"])
+    )
 
 st.set_page_config(
     page_title="제주 숨은 여행지 찾기",
@@ -24,7 +62,7 @@ st.set_page_config(
 @st.cache_data
 def load_data():
     return pd.read_csv(
-        BASE_DIR / "제주_자동차거리_TOP1_최종.csv",
+        BASE_DIR / "제주_자동차거리_TOP3_최종.csv",
         encoding="utf-8-sig"
     )
 
@@ -32,7 +70,7 @@ def load_data():
 @st.cache_data
 def load_routes():
     with open(
-        BASE_DIR / "제주_자동차TOP1_28쌍_실제도로경로.geojson",
+        BASE_DIR / "제주_TOP3_실제도로경로.geojson",
         "r",
         encoding="utf-8"
     ) as f:
@@ -167,9 +205,157 @@ selected = st.selectbox(
     index=default_index
 )
 
-result = df[
+# ==========================================
+# 거리·수요 가중치 선택
+# ==========================================
+
+weight_choice = st.radio(
+    "추천 기준을 선택하세요",
+    [
+        "⚖️ 균형 추천 (거리 50% · 수요 50%)",
+        "🚗 거리 우선 (거리 60% · 수요 40%)",
+        "🌿 수요 분산 우선 (거리 40% · 수요 60%)"
+    ],
+    horizontal=True
+)
+
+if "거리 우선" in weight_choice:
+    distance_weight = 0.6
+elif "수요 분산 우선" in weight_choice:
+    distance_weight = 0.4
+else:
+    distance_weight = 0.5
+
+# 선택한 출발 관광지의 추천 후보
+candidates = df[
     df["출발관광지"] == selected
-].iloc[0]
+].copy()
+
+# 선택한 가중치로 추천 점수 재계산
+candidates["선택가중치점수"] = (
+    candidates["거리점수_자동차"] * distance_weight
+    + candidates["수요여유점수_자동차"] * (1 - distance_weight)
+)
+
+# 추천 점수가 높은 순서대로 정렬
+candidates = candidates.sort_values(
+    "선택가중치점수",
+    ascending=False
+)
+
+# 같은 장소인 코난해변과 코난비치를 하나로 처리
+candidates["중복제거용이름"] = candidates["목적지명_정리"].replace({
+    "코난비치": "코난해변"
+})
+
+candidates = candidates.drop_duplicates(
+    subset=["중복제거용이름"],
+    keep="first"
+)
+
+# 가장 높은 점수의 관광지를 대표 추천지로 선택
+result = candidates.iloc[0]
+destination_type = str(result["카테고리 3단계"])
+
+# 선택된 추천 관광지의 위치 찾기
+locations = load_tourist_locations()
+
+# 출발 관광지의 위치 찾기
+origin_location = locations[
+    locations["hubTatsNm"] == str(selected)
+]
+
+if not origin_location.empty:
+    origin_lat = float(origin_location.iloc[0]["mapY"])
+    origin_lon = float(origin_location.iloc[0]["mapX"])
+else:
+    origin_lat = None
+    origin_lon = None
+
+destination_location = locations[
+    locations["hubTatsNm"] == str(result["목적지명_정리"])
+]
+
+if not destination_location.empty:
+    destination_lat = float(destination_location.iloc[0]["mapY"])
+    destination_lon = float(destination_location.iloc[0]["mapX"])
+else:
+    destination_lat = None
+    destination_lon = None
+
+# 현재 관광지(출발지) 주변 날씨 조회
+if origin_lat is not None and origin_lon is not None:
+    origin_weather = load_jeju_weather(origin_lat, origin_lon)
+else:
+    origin_weather = None
+
+# 현재 관광지(출발지) 주변 날씨 표시
+if origin_weather is not None:
+    st.info(
+        f"📍 {selected} 주변 현재 날씨 | "
+        f"기온 {origin_weather['temperature_2m']}°C | "
+        f"강수량 {origin_weather['precipitation']}mm | "
+        f"풍속 {origin_weather['wind_speed_10m']}km/h"
+    )
+else:
+    st.caption("현재 관광지 주변 날씨 정보를 불러올 수 없습니다.")
+# 추천 관광지 주변 날씨 조회
+if destination_lat is not None and destination_lon is not None:
+    weather = load_jeju_weather(destination_lat, destination_lon)
+else:
+    weather = None
+
+# 추천 관광지 주변 날씨 표시
+if weather is not None:
+    st.info(
+        f"🌤️ {result['목적지명_정리']} 주변 현재 날씨 | "
+        f"기온 {weather['temperature_2m']}°C | "
+        f"강수량 {weather['precipitation']}mm | "
+        f"풍속 {weather['wind_speed_10m']}km/h"
+    )
+else:
+    st.caption("추천 관광지 주변 날씨 정보를 불러올 수 없습니다.")
+st.caption(
+    "🌦️ 날씨 데이터: Open-Meteo API | "
+    "관광지 좌표 기준 날씨 정보 (현장 실측값 아님)"
+)
+# 비가 올 때 야외 관광지 방문 주의 안내
+outdoor_types = [
+    "해수욕장", "폭포/계곡", "골프장", "오름",
+    "명산", "관광농원", "목장"
+]
+
+if weather is not None:
+    if weather["precipitation"] > 0 and destination_type in outdoor_types:
+        st.warning(
+            "🌧️ 추천 관광지 주변에 강수가 표시됩니다. "
+            "야외 관광지이므로 방문 전 "
+            "현지 날씨와 운영·출입 상황을 확인해 주세요."
+        )
+
+# 강풍 시 야외 관광지 방문 주의 안내
+if weather is not None:
+    if weather["wind_speed_10m"] >= 36 and destination_type in outdoor_types:
+        st.warning(
+            "💨 추천 관광지 주변 풍속이 36km/h 이상입니다. "
+            "야외 활동 시 강풍에 주의하고, "
+            "방문 전 현지 기상특보와 출입 상황을 확인해 주세요."
+        )
+st.markdown("### 🏅 가중치별 추천 TOP3")
+
+for rank, (_, candidate) in enumerate(
+    candidates.head(3).iterrows(), start=1
+):
+    st.write(
+        f"**{rank}위. {candidate['목적지명_정리']}** "
+        f"｜자동차 {candidate['자동차거리_km']:.1f}km "
+        f"｜약 {candidate['자동차시간_분']:.0f}분"
+    )
+
+st.caption(
+    f"현재 출발지의 추천 후보는 총 {len(candidates)}개입니다. "
+    "후보가 3개 미만이면 있는 후보만 표시합니다."
+)
 
 destination = str(result["목적지명_정리"])
 distance = float(result["자동차거리_km"])
@@ -320,11 +506,24 @@ selected_routes = []
 for feature in route_data["features"]:
     props = feature.get("properties", {})
 
-    if props.get("출발관광지") == selected:
+    if (
+    props.get("출발관광지") == selected
+    and props.get("목적지명_정리") == destination
+):
         selected_routes.append(feature)
 
-if selected_routes:
+original_top1 = df[
+    (df["출발관광지"] == selected)
+    & (df["추천순위_자동차"] == 1)
+]
 
+route_is_valid = (
+    bool(selected_routes)
+    and not original_top1.empty
+    and str(original_top1.iloc[0]["목적지명_정리"]) == destination
+)
+
+if selected_routes:
     route = selected_routes[0]
     coordinates = route["geometry"]["coordinates"]
 
@@ -342,6 +541,7 @@ if selected_routes:
         control_scale=True
     )
 
+  
     # 파란색 자동차 도로 경로
     folium.GeoJson(
         route,
@@ -406,9 +606,50 @@ if selected_routes:
     )
 
 else:
-    st.warning(
-        "선택한 관광지의 자동차 경로를 찾을 수 없습니다."
-    )
+    if destination_lat is not None and destination_lon is not None:
+        m = folium.Map(
+            location=[destination_lat, destination_lon],
+            zoom_start=13,
+            tiles="OpenStreetMap"
+        )
+
+        folium.Marker(
+            location=[destination_lat, destination_lon],
+            popup=f"추천 관광지: {destination}",
+            tooltip=destination,
+            icon=folium.Icon(color="green")
+        ).add_to(m)
+
+        # 빨간색 출발 관광지 마커
+        if origin_lat is not None and origin_lon is not None:
+            folium.Marker(
+                location=[origin_lat, origin_lon],
+                popup=f"출발 관광지: {selected}",
+                tooltip=f"출발: {selected}",
+                icon=folium.Icon(color="red")
+            ).add_to(m)
+
+            # 출발지와 목적지가 모두 보이도록 지도 범위 조정
+            m.fit_bounds([
+                [origin_lat, origin_lon],
+                [destination_lat, destination_lon]
+            ])
+
+        st_folium(
+            m,
+            height=480,
+            use_container_width=True,
+            returned_objects=[]
+        )
+
+        st.caption(
+            "🟢 추천 관광지 위치입니다. "
+            "해당 목적지의 실제 자동차 도로 경로는 아직 제공되지 않습니다."
+        )
+    else:
+        st.warning(
+            "추천 관광지의 위치 좌표를 찾지 못했습니다."
+        )
 
 
 # ==========================================
