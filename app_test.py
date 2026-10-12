@@ -322,7 +322,7 @@ times = pd.to_numeric(
 # API 조회 실패 시 기존 거리 점수 사용
 candidates["실시간접근성점수"] = candidates["거리점수_자동차"].copy()
 
-if times.notna().sum() >= 2 and times.max() > times.min():
+if times.notna().all() and len(times) >= 2 and times.max() > times.min():
     valid = times.notna()
 
     candidates.loc[valid, "실시간접근성점수"] = (
@@ -803,6 +803,11 @@ with st.expander("분석 기준 및 이용 시 유의사항"):
         "• 추천 점수는 모델 내부의 상대적 평가 지표이며, "
         "관광지의 절대적인 품질 점수가 아닙니다."
     )
+
+st.caption(
+    "2026 제주 관광 데이터 활용사례 공모전 | "
+    "데이터 기반 관광수요 분산 추천 서비스"
+)
 
 st.caption(
     "2026 제주 관광 데이터 활용사례 공모전 | "
