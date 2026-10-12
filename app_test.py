@@ -5,13 +5,31 @@ import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
-
+import requests
 
 # ==========================================
 # 1. 기본 설정
 # ==========================================
 
 BASE_DIR = Path(__file__).resolve().parent
+@st.cache_data(ttl=600)
+def load_jeju_weather():
+    url = "https://api.open-meteo.com/v1/forecast"
+
+    params = {
+        "latitude": 33.4996,
+        "longitude": 126.5312,
+        "current": "temperature_2m,precipitation,weather_code,wind_speed_10m",
+        "timezone": "Asia/Seoul"
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()["current"]
+    except (requests.RequestException, KeyError, ValueError):
+        return None
+
 # 관광지 위치 좌표 데이터 불러오기
 @st.cache_data
 def load_tourist_locations():
@@ -160,7 +178,17 @@ st.markdown("""
     </div>
 </div>
 """, unsafe_allow_html=True)
+weather = load_jeju_weather()
 
+if weather is not None:
+    st.info(
+        f"🌤️ 제주시 현재 날씨 | "
+        f"기온 {weather['temperature_2m']}°C | "
+        f"강수량 {weather['precipitation']}mm | "
+        f"풍속 {weather['wind_speed_10m']}km/h"
+    )
+else:
+    st.caption("현재 날씨 정보를 불러올 수 없습니다.")
 
 # ==========================================
 # 4. 출발 관광지 선택
@@ -227,6 +255,17 @@ candidates = candidates.sort_values(
 
 # 가장 높은 점수의 관광지를 대표 추천지로 선택
 result = candidates.iloc[0]
+destination_type = str(result["카테고리 3단계"])
+# 비가 올 때 야외 관광지 방문 주의 안내
+outdoor_types = ["해수욕장", "폭포/계곡", "골프장", "오름"]
+
+if weather is not None:
+    if weather["precipitation"] > 0 and destination_type in outdoor_types:
+        st.warning(
+            "🌧️ 현재 제주시에서 비가 관측되고 있습니다. "
+            "추천 관광지는 야외 관광지이므로 방문 전 "
+            "현지 날씨와 운영·출입 상황을 확인해 주세요."
+        )
 
 # 선택된 추천 관광지의 위치 찾기
 locations = load_tourist_locations()
