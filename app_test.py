@@ -6,12 +6,70 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import requests
+import os
 
+from pathlib import Path
+from dotenv import load_dotenv
+
+# 로컬 개발 환경에서만 .env 파일 읽기
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(env_path)
+
+# 네이버 API 인증정보 로딩 확인 (실제 키는 표시하지 않음)
+naver_id = os.getenv("NAVER_CLIENT_ID")
+naver_secret = os.getenv("NAVER_CLIENT_SECRET")
+
+# 배포 환경에서는 Streamlit Secrets 사용
+if not naver_id or not naver_secret:
+    try:
+        naver_id = st.secrets.get("NAVER_CLIENT_ID")
+        naver_secret = st.secrets.get("NAVER_CLIENT_SECRET")
+    except (FileNotFoundError, KeyError):
+        pass
+if naver_id and naver_secret:
+    print("네이버 API 인증정보 로딩 성공")
+else:
+    print("네이버 API 인증정보 로딩 실패")
 # ==========================================
 # 1. 기본 설정
 # ==========================================
 
 BASE_DIR = Path(__file__).resolve().parent
+# 네이버 Directions API로 현재 교통 반영 이동시간 조회
+@st.cache_data(ttl=300)
+def get_live_driving_time(start_lon, start_lat, goal_lon, goal_lat):
+    if not naver_id or not naver_secret:
+        return None
+
+    url = "https://maps.apigw.ntruss.com/map-direction/v1/driving"
+
+    headers = {
+        "x-ncp-apigw-api-key-id": naver_id,
+        "x-ncp-apigw-api-key": naver_secret
+    }
+
+    params = {
+        "start": f"{start_lon},{start_lat}",
+        "goal": f"{goal_lon},{goal_lat}",
+        "option": "trafast"
+    }
+
+    try:
+        response = requests.get(
+            url, headers=headers, params=params, timeout=15
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        routes = data.get("route", {}).get("trafast", [])
+
+        if data.get("code") == 0 and routes:
+            return routes[0]["summary"]["duration"] / 60000
+
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        pass
+
+    return None
 @st.cache_data(ttl=600)
 def load_jeju_weather(latitude, longitude):
     url = "https://api.open-meteo.com/v1/forecast"
@@ -231,9 +289,50 @@ candidates = df[
     df["출발관광지"] == selected
 ].copy()
 
+# 실시간 교통 조회에 사용할 관광지 좌표 준비
+traffic_locations = load_tourist_locations().set_index("hubTatsNm")
+
+# 출발 관광지와 추천 후보의 현재 교통 반영 이동시간 조회
+candidates["실시간이동시간_분"] = None
+
+if selected in traffic_locations.index:
+    start = traffic_locations.loc[selected]
+
+    for idx, candidate in candidates.iterrows():
+        destination_name = str(candidate["목적지명_정리"])
+
+        if destination_name in traffic_locations.index:
+            goal = traffic_locations.loc[destination_name]
+
+            live_minutes = get_live_driving_time(
+                float(start["mapX"]),
+                float(start["mapY"]),
+                float(goal["mapX"]),
+                float(goal["mapY"])
+            )
+
+            candidates.at[idx, "실시간이동시간_분"] = live_minutes
+            print(f"[교통 확인] {selected} → {destination_name}: {live_minutes}분")
+# 현재 교통 반영 이동시간으로 접근성 점수 계산
+times = pd.to_numeric(
+    candidates["실시간이동시간_분"],
+    errors="coerce"
+)
+
+# API 조회 실패 시 기존 거리 점수 사용
+candidates["실시간접근성점수"] = candidates["거리점수_자동차"].copy()
+
+if times.notna().sum() >= 2 and times.max() > times.min():
+    valid = times.notna()
+
+    candidates.loc[valid, "실시간접근성점수"] = (
+        (times.max() - times[valid])
+        / (times.max() - times.min())
+    ) * 100
+
 # 선택한 가중치로 추천 점수 재계산
 candidates["선택가중치점수"] = (
-    candidates["거리점수_자동차"] * distance_weight
+    candidates["실시간접근성점수"] * distance_weight
     + candidates["수요여유점수_자동차"] * (1 - distance_weight)
 )
 
@@ -346,10 +445,17 @@ st.markdown("### 🏅 가중치별 추천 TOP3")
 for rank, (_, candidate) in enumerate(
     candidates.head(3).iterrows(), start=1
 ):
+    live_time = candidate["실시간이동시간_분"]
+
+    if pd.notna(live_time):
+        time_text = f"약 {float(live_time):.0f}분 (현재 교통 반영)"
+    else:
+        time_text = f"약 {candidate['자동차시간_분']:.0f}분 (분석 기준)"
+
     st.write(
         f"**{rank}위. {candidate['목적지명_정리']}** "
         f"｜자동차 {candidate['자동차거리_km']:.1f}km "
-        f"｜약 {candidate['자동차시간_분']:.0f}분"
+        f"｜{time_text}"
     )
 
 st.caption(
@@ -359,7 +465,15 @@ st.caption(
 
 destination = str(result["목적지명_정리"])
 distance = float(result["자동차거리_km"])
-duration = float(result["자동차시간_분"])
+# 실시간 교통시간 우선 사용, 조회 실패 시 기존 분석 시간 사용
+live_duration = result["실시간이동시간_분"]
+
+if pd.notna(live_duration):
+    duration = float(live_duration)
+    duration_source = "현재 교통 반영"
+else:
+    duration = float(result["자동차시간_분"])
+    duration_source = "분석 기준"
 
 origin_count = int(result["출발관광지_도착수"])
 destination_count = int(result["관광객 도착 수"])
@@ -400,10 +514,10 @@ with col2:
     )
 
 st.caption(
-    "이동거리와 시간은 분석 시점의 도로 경로 데이터 기준이며, "
-    "실시간 교통상황은 반영하지 않습니다."
+    f"🚗 이동거리는 분석 시점의 도로 경로 데이터 기준입니다. "
+    f"⏱️ 예상 이동시간은 {duration_source}이며, "
+    "실시간 교통 정보도 실제 주행 상황과 차이가 있을 수 있습니다."
 )
-
 
 # ==========================================
 # 6. 관광수요 비교
