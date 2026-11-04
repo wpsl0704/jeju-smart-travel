@@ -7,8 +7,8 @@ import folium
 from streamlit_folium import st_folium
 import requests
 import os
+from concurrent.futures import ThreadPoolExecutor
 
-from pathlib import Path
 from dotenv import load_dotenv
 
 # 로컬 개발 환경에서만 .env 파일 읽기
@@ -35,8 +35,7 @@ else:
 # ==========================================
 
 BASE_DIR = Path(__file__).resolve().parent
-# 네이버 Directions API로 현재 교통 반영 이동시간 조회
-@st.cache_data(ttl=300)
+# 네이버 Directions API로 현재 교통 반영 이동시간 조회 (1건)
 def get_live_driving_time(start_lon, start_lat, goal_lon, goal_lat):
     if not naver_id or not naver_secret:
         return None
@@ -56,7 +55,7 @@ def get_live_driving_time(start_lon, start_lat, goal_lon, goal_lat):
 
     try:
         response = requests.get(
-            url, headers=headers, params=params, timeout=15
+            url, headers=headers, params=params, timeout=4
         )
         response.raise_for_status()
 
@@ -70,7 +69,21 @@ def get_live_driving_time(start_lon, start_lat, goal_lon, goal_lat):
         pass
 
     return None
-@st.cache_data(ttl=600)
+
+
+# 여러 후보의 이동시간을 동시에 조회 (결과 5분 캐시)
+@st.cache_data(ttl=300, show_spinner=False)
+def get_live_driving_times(coord_list):
+    if not naver_id or not naver_secret or not coord_list:
+        return [None] * len(coord_list)
+
+    with ThreadPoolExecutor(max_workers=len(coord_list)) as executor:
+        return list(executor.map(
+            lambda args: get_live_driving_time(*args), coord_list
+        ))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def load_jeju_weather(latitude, longitude):
     url = "https://api.open-meteo.com/v1/forecast"
 
@@ -82,7 +95,7 @@ def load_jeju_weather(latitude, longitude):
     }
 
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=4)
         response.raise_for_status()
         return response.json()["current"]
     except (requests.RequestException, KeyError, ValueError):
@@ -303,21 +316,27 @@ candidates["실시간이동시간_분"] = None
 if selected in traffic_locations.index:
     start = traffic_locations.loc[selected]
 
+    # 조회할 후보 목록 준비
+    jobs = {}
     for idx, candidate in candidates.iterrows():
         destination_name = str(candidate["목적지명_정리"])
 
         if destination_name in traffic_locations.index:
             goal = traffic_locations.loc[destination_name]
-
-            live_minutes = get_live_driving_time(
+            jobs[idx] = (
                 float(start["mapX"]),
                 float(start["mapY"]),
                 float(goal["mapX"]),
                 float(goal["mapY"])
             )
 
-            candidates.at[idx, "실시간이동시간_분"] = live_minutes
-         
+    # 후보별 API 호출을 한 번에 동시 실행 (결과는 5분간 캐시)
+    if jobs:
+        with st.spinner("현재 교통 정보를 불러오는 중..."):
+            results = get_live_driving_times(tuple(jobs.values()))
+        for idx, minutes in zip(jobs.keys(), results):
+            candidates.at[idx, "실시간이동시간_분"] = minutes
+
 # 현재 교통 반영 이동시간으로 접근성 점수 계산
 times = pd.to_numeric(
     candidates["실시간이동시간_분"],
