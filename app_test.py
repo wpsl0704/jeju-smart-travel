@@ -558,13 +558,6 @@ st.caption(
     "후보가 3개 미만이면 있는 후보만 표시합니다."
 )
 
-if excluded_names:
-    st.caption(
-        f"🚫 최근 {RECENT_MONTHS}개월 동안 도착 기록이 없는 "
-        f"{', '.join(excluded_names)}은(는) 운영 여부 확인이 필요해 "
-        "추천 후보에서 제외했습니다."
-    )
-
 destination = str(result["목적지명_정리"])
 distance = float(result["자동차거리_km"])
 # 실시간 교통시간 우선 사용, 조회 실패 시 기존 분석 시간 사용
