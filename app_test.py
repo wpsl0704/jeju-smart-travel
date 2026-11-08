@@ -148,6 +148,35 @@ def load_routes():
         return json.load(f)
 
 
+# 최근 몇 개월 동안 도착 기록이 없으면 추천 후보에서 제외할지 (운영 중단 가능성)
+RECENT_MONTHS = 3
+
+
+# 관광지별 마지막 관측 월 불러오기 (파일이 없으면 제외 규칙을 적용하지 않음)
+@st.cache_data
+def load_observation_period():
+    path = BASE_DIR / "제주_관광지_관측기간.csv"
+    if not path.exists():
+        return None
+
+    observation = pd.read_csv(path, encoding="utf-8-sig")
+    observation["최근관측월"] = pd.to_numeric(
+        observation["최근관측월"], errors="coerce"
+    )
+    return (
+        observation
+        .dropna(subset=["최근관측월"])
+        .drop_duplicates(subset=["관광지명"])
+        .set_index("관광지명")
+    )
+
+
+# YYYYMM을 월 단위 숫자로 바꿔 개월 차이를 계산
+def month_index(yyyymm):
+    yyyymm = int(yyyymm)
+    return (yyyymm // 100) * 12 + (yyyymm % 100) - 1
+
+
 df = load_data()
 route_data = load_routes()
 
@@ -306,6 +335,33 @@ candidates = candidates.drop_duplicates(
     subset=["목적지명_정리"],
     keep="first"
 ).copy()
+
+# 최근 RECENT_MONTHS개월 동안 도착 기록이 없는 후보는 운영 여부 확인이 필요해 제외
+# (예: 무민랜드/제주는 2025년 10월 이후 기록 없음)
+excluded_names = []
+observation = load_observation_period()
+
+if observation is not None and not observation.empty:
+    data_end = month_index(observation["최근관측월"].max())
+    last_seen = candidates["목적지명_정리"].map(observation["최근관측월"])
+
+    # 관측기간 파일에 없는 후보는 제외하지 않음
+    months_since = last_seen.map(
+        lambda v: data_end - month_index(v) if pd.notna(v) else 0
+    )
+    stale = months_since >= RECENT_MONTHS
+
+    excluded_names = (
+        candidates.loc[stale, "목적지명_정리"].astype(str).tolist()
+    )
+    candidates = candidates.loc[~stale].copy()
+
+if candidates.empty:
+    st.warning(
+        "선택한 관광지에는 현재 추천할 수 있는 대체 관광지가 없습니다. "
+        "후보 관광지의 최근 운영 기록이 확인되지 않았습니다."
+    )
+    st.stop()
 
 # 실시간 교통 조회에 사용할 관광지 좌표 준비
 traffic_locations = load_tourist_locations().set_index("hubTatsNm")
@@ -501,6 +557,13 @@ st.caption(
     f"현재 출발지의 추천 후보는 총 {len(candidates)}개입니다. "
     "후보가 3개 미만이면 있는 후보만 표시합니다."
 )
+
+if excluded_names:
+    st.caption(
+        f"🚫 최근 {RECENT_MONTHS}개월 동안 도착 기록이 없는 "
+        f"{', '.join(excluded_names)}은(는) 운영 여부 확인이 필요해 "
+        "추천 후보에서 제외했습니다."
+    )
 
 destination = str(result["목적지명_정리"])
 distance = float(result["자동차거리_km"])
@@ -842,6 +905,11 @@ with st.expander("분석 기준 및 이용 시 유의사항"):
     st.write(
         "• 추천 결과는 데이터 기반 1차 후보지이며, "
         "실제 관광객 분산 효과를 검증한 결과는 아닙니다."
+    )
+
+    st.write(
+        f"• 분석 기간 마지막 {RECENT_MONTHS}개월 동안 도착 기록이 없는 관광지는 "
+        "운영 중단 가능성이 있어 추천 후보에서 제외했습니다."
     )
 
     st.write(
